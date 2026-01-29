@@ -11,6 +11,11 @@ import random
 from datetime import datetime
 from rembg import remove
 from PIL import Image
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
+
 # =======================================
 # FLASK APP
 # =======================================
@@ -20,10 +25,11 @@ CORS(app, resources={r"/*": {"origins": "*"}})
 # =======================================
 # CLOUDINARY CONFIG
 # =======================================
+
 cloudinary.config(
-    cloud_name="dggce9lgq",
-    api_key="595392624381522",
-    api_secret="HBAkBl7dzKlh-LDZHYs37K5D74c"
+    cloud_name=os.getenv("CLOUDINARY_CLOUD_NAME"),
+    api_key=os.getenv("CLOUDINARY_API_KEY"),
+    api_secret=os.getenv("CLOUDINARY_API_SECRET")
 )
 
 # =======================================
