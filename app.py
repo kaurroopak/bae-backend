@@ -20,6 +20,7 @@ load_dotenv()
 # FLASK APP
 # =======================================
 app = Flask(__name__)
+print("STEP 1: Flask Created")
 CORS(app, resources={r"/*": {"origins": "*"}})
 
 # =======================================
@@ -42,31 +43,45 @@ db = client['baeDB']
 users_collection = db['users']
 wardrobe_collection = db['wardrobe']
 favourites_collection = db['favourites']   # <- NEW: favourites collection
+print("STEP 2: Mongo Connected")
 
 # =======================================
 # MOOD MODEL
 # =======================================
-MOOD_MODEL_PATH = "models/mood_model/mobilenetv2_mood3class.tflite"
+MOOD_MODEL_PATH = "models/mood_model/mobilenetv2_mood_3class.tflite"
 MOOD_LABELS = ['happy', 'neutral', 'sad']
 
-try:
-    mood_model = tf.keras.models.load_model(MOOD_MODEL_PATH)
-    print("Mood Model Loaded Successfully")
-except Exception as e:
-    print("Mood model load error:", e)
-    mood_model = None
+mood_model = None
+
+def get_mood_model():
+    global mood_model
+
+    if mood_model is None:
+        print("Loading Mood Model...")
+        mood_model = tf.keras.models.load_model(MOOD_MODEL_PATH)
+        print("Mood Model Loaded")
+
+    return mood_model
 
 # =======================================
 # OUTFIT MODEL
 # =======================================
 OUTFIT_MODEL_PATH = "models/outfit_model/mobilenetv2_top_bottom.tflite"
 
-try:
-    outfit_model = tf.keras.layers.TFSMLayer(OUTFIT_MODEL_PATH, call_endpoint='serving_default')
-    print("Outfit Model Loaded")
-except Exception as e:
-    print("Outfit model load error:", e)
-    outfit_model = None
+outfit_model = None
+
+def get_outfit_model():
+    global outfit_model
+
+    if outfit_model is None:
+        print("Loading Outfit Model...")
+        outfit_model = tf.keras.layers.TFSMLayer(
+            OUTFIT_MODEL_PATH,
+            call_endpoint='serving_default'
+        )
+        print("Outfit Model Loaded")
+
+    return outfit_model
 
 
 def preprocess_for_outfit(img):
@@ -184,7 +199,8 @@ def predict():
         x = np.expand_dims(x, axis=0)
         x = preprocess_input(x)
 
-        preds = mood_model.predict(x)
+        model = get_mood_model()
+        preds = model.predict(x)
         mood = MOOD_LABELS[np.argmax(preds)]
         conf = float(np.max(preds))
 
@@ -285,7 +301,8 @@ def add_wardrobe():
         img_arr = np.array(img_no_bg)
         img_arr = cv2.cvtColor(img_arr, cv2.COLOR_RGBA2BGR)
         x = preprocess_for_outfit(img_arr)
-        output = outfit_model(x)
+        model = get_outfit_model()
+        output = model(x)
         pred = list(output.values())[0].numpy()
         predicted_class = "Topwear" if pred[0][0] < 0.5 else "Bottomwear"
 
