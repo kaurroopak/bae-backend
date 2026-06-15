@@ -36,9 +36,11 @@ cloudinary.config(
 # =======================================
 # MONGODB ATLAS
 # =======================================
-MONGO_URI = "mongodb+srv://baeUser:behencodes@cluster0.4ffhppa.mongodb.net/baeDB"
+MONGO_URI = "mongodb+srv://rkaur24_db_user:roop@mongoBAE@cluster-bae.vzvmcby.mongodb.net/?appName=Cluster-BAE"
 client = MongoClient(MONGO_URI)
 db = client['baeDB']
+client.admin.command('ping')
+print("MongoDB Connected Successfully")
 
 users_collection = db['users']
 wardrobe_collection = db['wardrobe']
