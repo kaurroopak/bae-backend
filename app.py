@@ -15,6 +15,7 @@ import os
 from dotenv import load_dotenv
 
 load_dotenv()
+print("APP STARTING")
 
 # =======================================
 # FLASK APP
@@ -36,7 +37,7 @@ cloudinary.config(
 # =======================================
 # MONGODB ATLAS
 # =======================================
-MONGO_URI = "mongodb+srv://rkaur24_db_user:roop@mongoBAE@cluster-bae.vzvmcby.mongodb.net/?appName=Cluster-BAE"
+MONGO_URI = os.getenv("MONGO_URI")
 client = MongoClient(MONGO_URI)
 db = client['baeDB']
 client.admin.command('ping')
@@ -64,6 +65,9 @@ def get_mood_model():
         print("Mood Model Loaded")
 
     return mood_model
+# def get_mood_model():
+#     print("Mood model requested")
+#     return None
 
 # =======================================
 # OUTFIT MODEL
@@ -84,6 +88,9 @@ def get_outfit_model():
         print("Outfit Model Loaded")
 
     return outfit_model
+# def get_mood_model():
+#     print("Mood model requested")
+#     return None
 
 
 def preprocess_for_outfit(img):
