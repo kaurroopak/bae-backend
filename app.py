@@ -9,7 +9,6 @@ import cloudinary, cloudinary.uploader
 from bson import ObjectId
 import random
 from datetime import datetime
-from rembg import remove
 from PIL import Image
 import os
 from dotenv import load_dotenv
@@ -196,6 +195,7 @@ def update_profile():
 # =======================================
 @app.route('/predict', methods=['POST'])
 def predict():
+    import tensorflow as tf
     try:
         if 'image' not in request.files:
             return jsonify({"error": "No image uploaded"}), 400
@@ -222,12 +222,12 @@ def predict():
 # =======================================
 # CLOUDINARY UPLOAD WITH AUTO BG REMOVAL
 # =======================================
-from rembg import remove
 from PIL import Image
 import io
 
 @app.route('/upload-image', methods=['POST'])
 def upload_image():
+    from rembg import remove
     try:
         if "image" not in request.files:
             return jsonify({"error": "No file uploaded"}), 400
@@ -268,6 +268,7 @@ def upload_image():
 
 @app.route('/wardrobe/add', methods=['POST'])
 def add_wardrobe():
+    from rembg import remove
     try:
         if "image" not in request.files:
             return jsonify({"error": "No file uploaded"}), 400
@@ -524,6 +525,7 @@ def get_favourites():
 
 @app.route('/remove-bg', methods=['POST'])
 def remove_bg():
+    from rembg import remove
     try:
         if "images" not in request.files:
             return jsonify({"error": "No files uploaded. Use key 'images'"}), 400
