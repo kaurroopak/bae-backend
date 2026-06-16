@@ -1,9 +1,9 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from werkzeug.utils import secure_filename
-import cv2, base64, numpy as np, tensorflow as tf, requests
-from tensorflow.keras.preprocessing import image
-from tensorflow.keras.applications.mobilenet_v2 import preprocess_input
+import cv2, base64, numpy as np, requests
+# from tensorflow.keras.preprocessing import image
+# from tensorflow.keras.applications.mobilenet_v2 import preprocess_input
 from pymongo import MongoClient
 import cloudinary, cloudinary.uploader
 from bson import ObjectId
@@ -59,10 +59,10 @@ def get_mood_model():
     global mood_model
 
     if mood_model is None:
+        import tensorflow as tf
         print("Loading Mood Model...")
         mood_model = tf.keras.models.load_model(MOOD_MODEL_PATH)
         print("Mood Model Loaded")
-
     return mood_model
 # def get_mood_model():
 #     print("Mood model requested")
@@ -79,13 +79,13 @@ def get_outfit_model():
     global outfit_model
 
     if outfit_model is None:
+        import tensorflow as tf
         print("Loading Outfit Model...")
         outfit_model = tf.keras.layers.TFSMLayer(
             OUTFIT_MODEL_PATH,
             call_endpoint='serving_default'
         )
         print("Outfit Model Loaded")
-
     return outfit_model
 # def get_mood_model():
 #     print("Mood model requested")
