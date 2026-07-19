@@ -21,7 +21,7 @@ import cloudinary
 import cloudinary.uploader
 import tensorflow as tf
 from tensorflow.keras.applications.mobilenet_v2 import preprocess_input
-from rembg import remove
+
 
 load_dotenv()
 print("=" * 60)
@@ -476,6 +476,7 @@ def predict():
 @app.route("/upload-image", methods=["POST"])
 def upload_image():
     try:
+        from rembg import remove
         if "image" not in request.files:
             return jsonify({
                 "success": False,
@@ -581,6 +582,8 @@ def add_wardrobe():
                 "success": False,
                 "error": "Unsupported image type."
             }), 400
+        
+        from rembg import remove
         
         img = Image.open(file).convert("RGBA")
 
@@ -1137,6 +1140,7 @@ def get_favourites():
 
 @app.route("/remove-bg", methods=["POST"])
 def remove_bg():
+    from rembg import remove
     try:
         if "images" not in request.files:
             return jsonify({
