@@ -2,8 +2,8 @@ from flask import Flask, request, jsonify
 from flask_cors import CORS
 from werkzeug.utils import secure_filename
 import cv2, base64, numpy as np, requests
-# from tensorflow.keras.preprocessing import image
-# from tensorflow.keras.applications.mobilenet_v2 import preprocess_input
+from tensorflow.keras.preprocessing import image
+from tensorflow.keras.applications.mobilenet_v2 import preprocess_input
 from pymongo import MongoClient
 import cloudinary, cloudinary.uploader
 from bson import ObjectId
