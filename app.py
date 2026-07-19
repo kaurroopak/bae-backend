@@ -625,7 +625,6 @@ def add_wardrobe():
             input_details,
             output_details
         ) = get_outfit_interpreter()
-        print(output_details)
 
         prediction = run_tflite(
             interpreter,
@@ -633,25 +632,16 @@ def add_wardrobe():
             output_details,
             x
         )
-        print("=" * 50)
-        print("RAW MODEL OUTPUT:")
-        print(prediction)
-        print("Prediction Shape:", prediction.shape)
-        print("Prediction Dtype:", prediction.dtype)
-        print("=" * 50)
 
-        prediction = prediction[0]
-        predicted_index = int(np.argmax(prediction))
-        class_names = [
-            "Topwear",
-            "Bottomwear"
-        ]
-        if predicted_index >= len(class_names):
-            predicted_class = "Unknown"
+        score = float(prediction[0][0])
+
+        THRESHOLD = 0.5
+        if score >= THRESHOLD:
+            predicted_class = "Bottomwear"
         else:
-            predicted_class = class_names[predicted_index]
+            predicted_class = "Topwear"
 
-        print(f"Predicted Category: {predicted_class}")
+        print(f"Prediction Score: {score:.6f} -> {predicted_class}")
 
         wardrobe_collection.insert_one({
             "userId": user_id,
