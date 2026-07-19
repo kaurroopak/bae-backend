@@ -262,39 +262,79 @@ def upload_image():
 
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
 # =======================================
 # ADD WARDROBE ITEM
 # =======================================
 
 @app.route('/wardrobe/add', methods=['POST'])
 def add_wardrobe():
-    from rembg import remove
     try:
+        print("========== ADD WARDROBE REQUEST RECEIVED ==========")
+
+        # -----------------------------
+        # Validate Request
+        # -----------------------------
         if "image" not in request.files:
+            print("ERROR: No image found in request")
             return jsonify({"error": "No file uploaded"}), 400
 
         file = request.files["image"]
         user_id = request.form.get("userId")
+        category = request.form.get("category")
+
+        print(f"User ID: {user_id}")
+        print(f"Category from frontend: {category}")
+        print(f"Filename: {file.filename}")
+
         if not user_id:
+            print("ERROR: Missing userId")
             return jsonify({"error": "Missing userId"}), 400
 
         ext = file.filename.rsplit(".", 1)[-1].lower()
+
         if ext not in ["png", "jpg", "jpeg", "webp"]:
+            print("ERROR: Unsupported file type")
             return jsonify({"error": f"Unsupported file type: {ext}"}), 400
 
-        # =========================
-        # Remove Background
-        # =========================
+        # ============================================================
+        # STEP 1 - Read Image
+        # ============================================================
+
+        print("STEP 1 : Reading Image")
+
         img = Image.open(file).convert("RGBA")
-        img_no_bg = remove(img)
+
+        print("STEP 1 DONE")
+
+        # ============================================================
+        # TEMPORARY: SKIP BACKGROUND REMOVAL
+        # ============================================================
+
+        print("STEP 2 : Skipping rembg for testing")
+
+        img_no_bg = img
+
+        print("STEP 2 DONE")
+
+        # ============================================================
+        # Convert to Buffer
+        # ============================================================
+
+        print("STEP 3 : Converting image to buffer")
 
         buf = io.BytesIO()
         img_no_bg.save(buf, format="PNG")
         buf.seek(0)
 
-        # =========================
+        print("STEP 3 DONE")
+
+        # ============================================================
         # Upload to Cloudinary
-        # =========================
+        # ============================================================
+
+        print("STEP 4 : Uploading to Cloudinary")
+
         upload = cloudinary.uploader.upload(
             buf,
             folder="wardrobe_items",
@@ -302,23 +342,49 @@ def add_wardrobe():
             overwrite=True,
             resource_type="image"
         )
+
         image_url = upload["secure_url"]
 
-        # =========================
+        print("STEP 4 DONE")
+        print(image_url)
+
+        # ============================================================
         # Outfit Prediction
-        # =========================
-        # Convert to OpenCV format
+        # ============================================================
+
+        print("STEP 5 : Starting Outfit Prediction")
+
         img_arr = np.array(img_no_bg)
         img_arr = cv2.cvtColor(img_arr, cv2.COLOR_RGBA2BGR)
-        x = preprocess_for_outfit(img_arr)
-        model = get_outfit_model()
-        output = model(x)
-        pred = list(output.values())[0].numpy()
-        predicted_class = "Topwear" if pred[0][0] < 0.5 else "Bottomwear"
 
-        # =========================
-        # Save to Wardrobe
-        # =========================
+        x = preprocess_for_outfit(img_arr)
+
+        print("Loading Outfit Model")
+
+        model = get_outfit_model()
+
+        print("Model Loaded")
+
+        output = model(x)
+
+        pred = list(output.values())[0].numpy()
+
+        predicted_class = (
+            "Topwear"
+            if pred[0][0] < 0.5
+            else "Bottomwear"
+        )
+
+        print("Prediction:", predicted_class)
+
+        print("STEP 5 DONE")
+
+        # ============================================================
+        # Save to MongoDB
+        # ============================================================
+
+        print("STEP 6 : Saving to MongoDB")
+
         wardrobe_collection.insert_one({
             "userId": user_id,
             "imageUrl": image_url,
@@ -326,14 +392,25 @@ def add_wardrobe():
             "deleted": False
         })
 
+        print("STEP 6 DONE")
+
+        print("========== REQUEST COMPLETED ==========")
+
         return jsonify({
-            "message": "Wardrobe item added with background removed",
+            "message": "Wardrobe item added successfully",
             "imageUrl": image_url,
             "predicted_category": predicted_class
         })
 
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        import traceback
+
+        print("========== ERROR ==========")
+        traceback.print_exc()
+
+        return jsonify({
+            "error": str(e)
+        }), 500
 
 # =======================================
 # GET WARDROBE
