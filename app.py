@@ -553,6 +553,7 @@ def upload_image():
 
 @app.route("/wardrobe/add", methods=["POST"])
 def add_wardrobe():
+    raise Exception("WARDROBE ADD ROUTE REACHED")
     try:
         print("=" * 60)
         print("NEW WARDROBE REQUEST")
