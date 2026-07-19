@@ -1,27 +1,46 @@
-from flask import Flask, request, jsonify
+from flask import (
+    Flask,
+    request,
+    jsonify,
+    send_file
+)
 from flask_cors import CORS
-from werkzeug.utils import secure_filename
-import cv2, base64, numpy as np, requests
-from tensorflow.keras.preprocessing import image
-from tensorflow.keras.applications.mobilenet_v2 import preprocess_input
-from pymongo import MongoClient
-import cloudinary, cloudinary.uploader
-from bson import ObjectId
+
+import os
+import io
+import zipfile
 import random
 from datetime import datetime
+import cv2
+import numpy as np
 from PIL import Image
-import os
 from dotenv import load_dotenv
+from pymongo import MongoClient
+from bson import ObjectId
+import cloudinary
+import cloudinary.uploader
+import tensorflow as tf
+from tensorflow.keras.applications.mobilenet_v2 import preprocess_input
 
 load_dotenv()
-print("APP STARTING")
+print("=" * 60)
+print("Starting BAE Backend...")
+print("=" * 60)
 
 # =======================================
 # FLASK APP
 # =======================================
 app = Flask(__name__)
-print("STEP 1: Flask Created")
-CORS(app, resources={r"/*": {"origins": "*"}})
+
+CORS(
+    app,
+    resources={
+        r"/*": {
+            "origins": "*"
+        }
+    }
+)
+print("✓ Flask Initialized")
 
 # =======================================
 # CLOUDINARY CONFIG
@@ -32,607 +51,1115 @@ cloudinary.config(
     api_key=os.getenv("CLOUDINARY_API_KEY"),
     api_secret=os.getenv("CLOUDINARY_API_SECRET")
 )
+print("✓ Cloudinary Configured")
 
 # =======================================
 # MONGODB ATLAS
 # =======================================
 MONGO_URI = os.getenv("MONGO_URI")
-client = MongoClient(MONGO_URI)
-db = client['baeDB']
-client.admin.command('ping')
-print("MongoDB Connected Successfully")
+client = MongoClient(
+    MONGO_URI,
+    serverSelectionTimeoutMS=5000
+)
+db = client["baeDB"]
+client.admin.command("ping")
 
-users_collection = db['users']
-wardrobe_collection = db['wardrobe']
-favourites_collection = db['favourites']   # <- NEW: favourites collection
-print("STEP 2: Mongo Connected")
+print("✓ MongoDB Connected")
+
+users_collection = db["users"]
+wardrobe_collection = db["wardrobe"]
+favourites_collection = db["favourites"]
 
 # =======================================
-# MOOD MODEL
+# MODEL PATHS AND LABELS
 # =======================================
 MOOD_MODEL_PATH = "models/mood_model/mobilenetv2_mood_3class.tflite"
 MOOD_LABELS = ['happy', 'neutral', 'sad']
 
-mood_model = None
-
-def get_mood_model():
-    global mood_model
-
-    if mood_model is None:
-        import tensorflow as tf
-        print("Loading Mood Model...")
-        mood_model = tf.keras.models.load_model(MOOD_MODEL_PATH)
-        print("Mood Model Loaded")
-    return mood_model
-# def get_mood_model():
-#     print("Mood model requested")
-#     return None
-
-# =======================================
-# OUTFIT MODEL
-# =======================================
 OUTFIT_MODEL_PATH = "models/outfit_model/mobilenetv2_top_bottom.tflite"
 
-outfit_model = None
+mood_interpreter = None
+mood_input_details = None
+mood_output_details = None
 
-def get_outfit_model():
-    global outfit_model
+outfit_interpreter = None
+outfit_input_details = None
+outfit_output_details = None
 
-    if outfit_model is None:
-        import tensorflow as tf
-        print("Loading Outfit Model...")
-        outfit_model = tf.keras.layers.TFSMLayer(
-            OUTFIT_MODEL_PATH,
-            call_endpoint='serving_default'
-        )
-        print("Outfit Model Loaded")
-    return outfit_model
-# def get_mood_model():
-#     print("Mood model requested")
-#     return None
+# =======================================
+# TENSORFLOW LITE UTILITIES
+# =======================================
 
+def load_interpreter(model_path):
+    """
+    Loads a TensorFlow Lite model once and returns:
+    interpreter,
+    input tensor details,
+    output tensor details
+    """
+    interpreter = tf.lite.Interpreter(model_path=model_path)
+    interpreter.allocate_tensors()
 
-def preprocess_for_outfit(img):
-    img = cv2.resize(img, (224, 224))
-    img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-    img = image.img_to_array(img)
+    input_details = interpreter.get_input_details()
+    output_details = interpreter.get_output_details()
+
+    return interpreter, input_details, output_details
+
+# =======================================
+# LOAD MOOD MODEL
+# =======================================
+
+def get_mood_interpreter():
+    global mood_interpreter
+    global mood_input_details
+    global mood_output_details
+
+    if mood_interpreter is None:
+        print("Loading Mood TFLite Model...")
+        (
+            mood_interpreter,
+            mood_input_details,
+            mood_output_details
+        ) = load_interpreter(MOOD_MODEL_PATH)
+
+        print("✓ Mood Model Loaded")
+
+    return (
+        mood_interpreter,
+        mood_input_details,
+        mood_output_details
+    )
+
+# =======================================
+# LOAD OUTFIT MODEL
+# =======================================
+
+def get_outfit_interpreter():
+    global outfit_interpreter
+    global outfit_input_details
+    global outfit_output_details
+
+    if outfit_interpreter is None:
+        print("Loading Outfit TFLite Model...")
+        (
+            outfit_interpreter,
+            outfit_input_details,
+            outfit_output_details
+        ) = load_interpreter(OUTFIT_MODEL_PATH)
+        print("✓ Outfit Model Loaded")
+
+    return (
+        outfit_interpreter,
+        outfit_input_details,
+        outfit_output_details
+    )
+
+# =======================================
+# IMAGE PREPROCESSING
+# =======================================
+
+def preprocess_for_mood(img):
+    img = img.resize((224, 224))
+    img = np.asarray(img, dtype=np.float32)
     img = np.expand_dims(img, axis=0)
     img = preprocess_input(img)
     return img
 
+def preprocess_for_outfit(img):
+    img = cv2.resize(img, (224, 224))
+    img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+    img = np.asarray(img, dtype=np.float32)
+    img = np.expand_dims(img, axis=0)
+    img = preprocess_input(img)
+    return img
+
+# =======================================
+# GENERIC TFLITE INFERENCE
+# =======================================
+
+def run_tflite(
+    interpreter,
+    input_details,
+    output_details,
+    input_data
+):
+    input_index = input_details[0]["index"]
+    output_index = output_details[0]["index"]
+
+    input_dtype = input_details[0]["dtype"]
+
+    if input_data.dtype != input_dtype:
+        input_data = input_data.astype(input_dtype)
+
+    interpreter.set_tensor(input_index, input_data)
+    interpreter.invoke()
+    prediction = interpreter.get_tensor(output_index)
+
+    return prediction
 
 # =======================================
 # BASIC ROUTES
 # =======================================
-@app.route('/')
+@app.route("/", methods=["GET"])
 def home():
-    return jsonify({"message": "BAE Backend Running"})
-
-@app.route('/health')
-def health():
-    return jsonify({"status": "OK"})
-
-
-# =======================================
-# USER AUTH
-# =======================================
-@app.route('/signup', methods=['POST'])
-def signup():
-    data = request.get_json()
-    username = data.get('username')
-    email = data.get('email')
-    password = data.get('password')
-
-    if not all([username, email, password]):
-        return jsonify({'success': False, 'message': 'All fields required'}), 400
-    
-    if not email.endswith("@thapar.edu"):
-        return jsonify({'success': False, 'message': 'Only @thapar.edu allowed'}), 400
-
-    if users_collection.find_one({'email': email}):
-        return jsonify({'success': False, 'message': 'Email already registered'}), 400
-
-    users_collection.insert_one({
-        "username": username,
-        "email": email,
-        "password": password
-    })
-
-    return jsonify({'success': True, 'full_name': username, 'email': email})
-
-
-@app.route('/login', methods=['POST'])
-def login():
-    data = request.get_json()
-    email = data.get("email")
-    password = data.get("password")
-
-    user = users_collection.find_one({"email": email, "password": password})
-
-    if not user:
-        return jsonify({'success': False, 'message': 'Invalid credentials'}), 401
-
     return jsonify({
-        'success': True,
-        'full_name': user['username'],
-        'email': user['email']
+        "message": "BAE Backend Running",
+        "status": "success",
+        "version": "1.0"
     })
 
+@app.route("/health", methods=["GET"])
+def health():
+    """
+    Health check endpoint used by Render.
+    """
+    try:
+        client.admin.command("ping")
+
+        return jsonify({
+            "status": "healthy",
+            "database": "connected",
+            "server": "running"
+        }), 200
+
+    except Exception as e:
+        return jsonify({
+            "status": "unhealthy",
+            "database": "disconnected",
+            "error": str(e)
+        }), 500
 
 # =======================================
-# PROFILE
+# USER SIGNUP
 # =======================================
-@app.route('/get_profile', methods=['GET'])
+
+@app.route("/signup", methods=["POST"])
+def signup():
+    try:
+        data = request.get_json()
+
+        if not data:
+            return jsonify({
+                "success": False,
+                "message": "No data received"
+            }), 400
+
+        username = data.get("username", "").strip()
+        email = data.get("email", "").strip().lower()
+        password = data.get("password", "").strip()
+
+        if not username or not email or not password:
+            return jsonify({
+                "success": False,
+                "message": "All fields are required."
+            }), 400
+
+        if not email.endswith("@thapar.edu"):
+            return jsonify({
+                "success": False,
+                "message": "Only @thapar.edu email addresses are allowed."
+            }), 400
+
+        existing_user = users_collection.find_one({"email": email})
+
+        if existing_user:
+            return jsonify({
+                "success": False,
+                "message": "Email already registered."
+            }), 400
+
+        users_collection.insert_one({
+            "username": username,
+            "email": email,
+            "password": password
+        })
+
+        return jsonify({
+            "success": True,
+            "full_name": username,
+            "email": email
+        }), 201
+
+    except Exception as e:
+        return jsonify({
+            "success": False,
+            "message": str(e)
+        }), 500
+
+# =======================================
+# USER LOGIN
+# =======================================
+
+@app.route("/login", methods=["POST"])
+def login():
+    try:
+        data = request.get_json()
+        if not data:
+            return jsonify({
+                "success": False,
+                "message": "No data received"
+            }), 400
+
+        email = data.get("email", "").strip().lower()
+        password = data.get("password", "").strip()
+
+        if not email or not password:
+            return jsonify({
+                "success": False,
+                "message": "Email and password are required."
+            }), 400
+
+        user = users_collection.find_one({
+            "email": email,
+            "password": password
+        })
+
+        if not user:
+            return jsonify({
+                "success": False,
+                "message": "Invalid credentials."
+            }), 401
+
+        return jsonify({
+            "success": True,
+            "full_name": user["username"],
+            "email": user["email"]
+        })
+
+    except Exception as e:
+        return jsonify({
+            "success": False,
+            "message": str(e)
+        }), 500
+
+# =======================================
+# GET PROFILE
+# =======================================
+
+@app.route("/get_profile", methods=["GET"])
 def get_profile():
-    email = request.args.get("email")
-    user = users_collection.find_one({"email": email}, {"_id": 0, "password": 0})
+    try:
+        email = request.args.get("email", "").strip().lower()
 
-    if not user:
-        return jsonify({'success': False, 'message': 'User not found'}), 404
+        if not email:
+            return jsonify({
+                "success": False,
+                "message": "Email is required."
+            }), 400
 
-    return jsonify({'success': True, 'user': user})
+        user = users_collection.find_one(
+            {"email": email},
+            {"_id": 0, "password": 0}
+        )
 
+        if user is None:
+            return jsonify({
+                "success": False,
+                "message": "User not found."
+            }), 404
 
-@app.route('/update_profile', methods=['POST'])
+        return jsonify({
+            "success": True,
+            "user": user
+        })
+
+    except Exception as e:
+        return jsonify({
+            "success": False,
+            "message": str(e)
+        }), 500
+
+# =======================================
+# UPDATE PROFILE
+# =======================================
+
+@app.route("/update_profile", methods=["POST"])
 def update_profile():
-    data = request.get_json()
-    email = data.get('email')
-    username = data.get('username')
+    try:
+        data = request.get_json()
 
-    result = users_collection.update_one(
-        {"email": email},
-        {"$set": {"username": username}}
-    )
+        if not data:
+            return jsonify({
+                "success": False,
+                "message": "No data received."
+            }), 400
 
-    if result.matched_count == 0:
-        return jsonify({'success': False, 'message': 'User not found'}), 404
+        email = data.get("email", "").strip().lower()
+        username = data.get("username", "").strip()
 
-    return jsonify({'success': True, 'username': username})
+        if not email or not username:
+            return jsonify({
+                "success": False,
+                "message": "Email and username are required."
+            }), 400
 
+        result = users_collection.update_one(
+            {"email": email},
+            {
+                "$set": {
+                    "username": username
+                }
+            }
+        )
+
+        if result.matched_count == 0:
+            return jsonify({
+                "success": False,
+                "message": "User not found."
+            }), 404
+
+        return jsonify({
+            "success": True,
+            "username": username
+        })
+
+    except Exception as e:
+        return jsonify({
+            "success": False,
+            "message": str(e)
+        }), 500
 
 # =======================================
 # MOOD DETECTION
 # =======================================
-@app.route('/predict', methods=['POST'])
+
+@app.route("/predict", methods=["POST"])
 def predict():
-    import tensorflow as tf
-    try:
-        if 'image' not in request.files:
-            return jsonify({"error": "No image uploaded"}), 400
-
-        file = request.files['image']
-        img = Image.open(file).convert("RGB")
-        img = img.resize((224, 224))  # model input size
-
-        x = image.img_to_array(img)
-        x = np.expand_dims(x, axis=0)
-        x = preprocess_input(x)
-
-        model = get_mood_model()
-        preds = model.predict(x)
-        mood = MOOD_LABELS[np.argmax(preds)]
-        conf = float(np.max(preds))
-
-        return jsonify({"mood": mood, "confidence": f"{conf*100:.2f}%"})
-
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-
-# =======================================
-# CLOUDINARY UPLOAD WITH AUTO BG REMOVAL
-# =======================================
-from PIL import Image
-import io
-
-@app.route('/upload-image', methods=['POST'])
-def upload_image():
-    from rembg import remove
     try:
         if "image" not in request.files:
-            return jsonify({"error": "No file uploaded"}), 400
+            return jsonify({
+                "success": False,
+                "error": "No image uploaded."
+            }), 400
 
         file = request.files["image"]
-        ext = file.filename.rsplit(".", 1)[-1].lower()
-        if ext not in ["png", "jpg", "jpeg", "webp"]:
-            return jsonify({"error": f"Unsupported file type: {ext}"}), 400
+        img = Image.open(file).convert("RGB")
+        x = preprocess_for_mood(img)
+        (
+            interpreter,
+            input_details,
+            output_details
+        ) = get_mood_interpreter()
 
-        # Open image and remove background
-        img = Image.open(file).convert("RGBA")
-        img_no_bg = remove(img)
-
-        # Save to buffer
-        buf = io.BytesIO()
-        img_no_bg.save(buf, format="PNG")
-        buf.seek(0)
-
-        # Upload to Cloudinary
-        upload = cloudinary.uploader.upload(
-            buf,
-            folder="wardrobe_items",
-            public_id=file.filename.rsplit(".", 1)[0],  # optional: keeps original name
-            overwrite=True,
-            resource_type="image"
+        prediction = run_tflite(
+            interpreter,
+            input_details,
+            output_details,
+            x
         )
 
+        prediction = prediction[0]
+        predicted_index = int(np.argmax(prediction))
+        confidence = float(np.max(prediction))
+        mood = MOOD_LABELS[predicted_index]
+
         return jsonify({
-            "message": "Uploaded and background removed",
-            "url": upload["secure_url"]
+            "success": True,
+            "mood": mood,
+            "confidence": round(confidence * 100, 2)
         })
 
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        import traceback
+        traceback.print_exc()
+
+        return jsonify({
+            "success": False,
+            "error": str(e)
+        }), 500
 
 # =======================================
-# ADD WARDROBE ITEM
+# CLOUDINARY UPLOAD WITH BACKGROUND REMOVAL
 # =======================================
 
-@app.route('/wardrobe/add', methods=['POST'])
-def add_wardrobe():
+@app.route("/upload-image", methods=["POST"])
+def upload_image():
     try:
-        print("========== ADD WARDROBE REQUEST RECEIVED ==========")
-
-        # -----------------------------
-        # Validate Request
-        # -----------------------------
+        from rembg import remove
         if "image" not in request.files:
-            print("ERROR: No image found in request")
-            return jsonify({"error": "No file uploaded"}), 400
+            return jsonify({
+                "success": False,
+                "error": "No image uploaded."
+            }), 400
 
         file = request.files["image"]
-        user_id = request.form.get("userId")
-        category = request.form.get("category")
 
-        print(f"User ID: {user_id}")
-        print(f"Category from frontend: {category}")
-        print(f"Filename: {file.filename}")
-
-        if not user_id:
-            print("ERROR: Missing userId")
-            return jsonify({"error": "Missing userId"}), 400
+        if file.filename == "":
+            return jsonify({
+                "success": False,
+                "error": "No file selected."
+            }), 400
 
         ext = file.filename.rsplit(".", 1)[-1].lower()
 
-        if ext not in ["png", "jpg", "jpeg", "webp"]:
-            print("ERROR: Unsupported file type")
-            return jsonify({"error": f"Unsupported file type: {ext}"}), 400
+        allowed_extensions = {
+            "png",
+            "jpg",
+            "jpeg",
+            "webp"
+        }
 
-        # ============================================================
-        # STEP 1 - Read Image
-        # ============================================================
-
-        print("STEP 1 : Reading Image")
+        if ext not in allowed_extensions:
+            return jsonify({
+                "success": False,
+                "error": f"Unsupported file type: {ext}"
+            }), 400
+        print("Opening Image...")
 
         img = Image.open(file).convert("RGBA")
+        print("Removing Background...")
 
-        print("STEP 1 DONE")
+        img_no_bg = remove(img)
+        print("Background Removed")
 
-        # ============================================================
-        # TEMPORARY: SKIP BACKGROUND REMOVAL
-        # ============================================================
+        buffer = io.BytesIO()
+        img_no_bg.save(
+            buffer,
+            format="PNG"
+        )
 
-        print("STEP 2 : Skipping rembg for testing")
-
-        img_no_bg = img
-
-        print("STEP 2 DONE")
-
-        # ============================================================
-        # Convert to Buffer
-        # ============================================================
-
-        print("STEP 3 : Converting image to buffer")
-
-        buf = io.BytesIO()
-        img_no_bg.save(buf, format="PNG")
-        buf.seek(0)
-
-        print("STEP 3 DONE")
-
-        # ============================================================
-        # Upload to Cloudinary
-        # ============================================================
-
-        print("STEP 4 : Uploading to Cloudinary")
+        buffer.seek(0)
+        print("Uploading to Cloudinary...")
 
         upload = cloudinary.uploader.upload(
-            buf,
+            buffer,
             folder="wardrobe_items",
-            public_id=file.filename.rsplit(".", 1)[0],
+            public_id=os.path.splitext(file.filename)[0],
             overwrite=True,
             resource_type="image"
         )
 
         image_url = upload["secure_url"]
+        print("Upload Successful")
 
-        print("STEP 4 DONE")
-        print(image_url)
+        return jsonify({
+            "success": True,
+            "message": "Image uploaded successfully.",
+            "url": image_url
+        })
 
-        # ============================================================
-        # Outfit Prediction
-        # ============================================================
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
 
-        print("STEP 5 : Starting Outfit Prediction")
+        return jsonify({
+            "success": False,
+            "error": str(e)
+        }), 500
 
+# =======================================
+# ADD WARDROBE ITEM
+# =======================================
+
+@app.route("/wardrobe/add", methods=["POST"])
+def add_wardrobe():
+    try:
+        print("=" * 60)
+        print("NEW WARDROBE REQUEST")
+        print("=" * 60)
+        # -----------------------------
+        # Validate Request
+        # -----------------------------
+        if "image" not in request.files:
+            return jsonify({
+                "success": False,
+                "error": "No image uploaded."
+            }), 400
+        file = request.files["image"]
+        user_id = request.form.get("userId")
+
+        if not user_id:
+            return jsonify({
+                "success": False,
+                "error": "Missing userId."
+            }), 400
+
+        ext = file.filename.rsplit(".", 1)[-1].lower()
+
+        if ext not in {"png", "jpg", "jpeg", "webp"}:
+            return jsonify({
+                "success": False,
+                "error": "Unsupported image type."
+            }), 400
+
+        print("Reading image...")
+
+        img = Image.open(file).convert("RGBA")
+
+        # ------------------------------------------------
+        # Keep background removal disabled for now.
+        # We can enable rembg after verifying inference.
+        # ------------------------------------------------
+        img_no_bg = img
+
+        print("Preparing image buffer...")
+        buffer = io.BytesIO()
+        img_no_bg.save(
+            buffer,
+            format="PNG"
+        )
+        buffer.seek(0)
+        print("Uploading image to Cloudinary...")
+
+        upload = cloudinary.uploader.upload(
+            buffer,
+            folder="wardrobe_items",
+            public_id=os.path.splitext(file.filename)[0],
+            overwrite=True,
+            resource_type="image"
+        )
+        image_url = upload["secure_url"]
+        print("Cloudinary upload complete.")
+        # --------------------------------------------
+        # TensorFlow Lite Outfit Prediction
+        # --------------------------------------------
+        print("Running outfit prediction...")
         img_arr = np.array(img_no_bg)
-        img_arr = cv2.cvtColor(img_arr, cv2.COLOR_RGBA2BGR)
-
+        img_arr = cv2.cvtColor(
+            img_arr,
+            cv2.COLOR_RGBA2BGR
+        )
         x = preprocess_for_outfit(img_arr)
+        (
+            interpreter,
+            input_details,
+            output_details
+        ) = get_outfit_interpreter()
 
-        print("Loading Outfit Model")
-
-        model = get_outfit_model()
-
-        print("Model Loaded")
-
-        output = model(x)
-
-        pred = list(output.values())[0].numpy()
-
-        predicted_class = (
-            "Topwear"
-            if pred[0][0] < 0.5
-            else "Bottomwear"
+        prediction = run_tflite(
+            interpreter,
+            input_details,
+            output_details,
+            x
         )
 
-        print("Prediction:", predicted_class)
+        prediction = prediction[0]
+        predicted_index = int(np.argmax(prediction))
+        class_names = [
+            "Topwear",
+            "Bottomwear"
+        ]
+        if predicted_index >= len(class_names):
+            predicted_class = "Unknown"
+        else:
+            predicted_class = class_names[predicted_index]
 
-        print("STEP 5 DONE")
-
-        # ============================================================
-        # Save to MongoDB
-        # ============================================================
-
-        print("STEP 6 : Saving to MongoDB")
+        print(f"Predicted Category: {predicted_class}")
 
         wardrobe_collection.insert_one({
             "userId": user_id,
             "imageUrl": image_url,
             "category": predicted_class,
-            "deleted": False
+            "deleted": False,
+            "createdAt": datetime.utcnow()
         })
 
-        print("STEP 6 DONE")
-
-        print("========== REQUEST COMPLETED ==========")
+        print("Wardrobe item stored successfully.")
 
         return jsonify({
-            "message": "Wardrobe item added successfully",
+            "success": True,
+            "message": "Wardrobe item added successfully.",
             "imageUrl": image_url,
             "predicted_category": predicted_class
         })
 
     except Exception as e:
         import traceback
-
-        print("========== ERROR ==========")
         traceback.print_exc()
-
         return jsonify({
+            "success": False,
             "error": str(e)
         }), 500
 
 # =======================================
 # GET WARDROBE
 # =======================================
-@app.route('/wardrobe/all', methods=['GET'])
+
+@app.route("/wardrobe/all", methods=["GET"])
 def get_wardrobe():
-    user_id = request.args.get("userId")
-    items = list(wardrobe_collection.find({"userId": user_id}))
+    try:
+        user_id = request.args.get("userId", "").strip()
+        if not user_id:
+            return jsonify({
+                "success": False,
+                "error": "Missing userId."
+            }), 400
 
-    for i in items:
-        i["id"] = str(i["_id"])
-        del i["_id"]
+        items = list(
+            wardrobe_collection.find(
+                {
+                    "userId": user_id,
+                    "deleted": False
+                }
+            ).sort("createdAt", -1)
+        )
 
-    return jsonify({"items": items})
+        results = []
+
+        for item in items:
+            results.append({
+                "id": str(item["_id"]),
+                "userId": item.get("userId"),
+                "imageUrl": item.get("imageUrl"),
+                "category": item.get("category"),
+                "deleted": item.get("deleted", False),
+                "createdAt": item.get("createdAt")
+            })
+
+        return jsonify({
+            "success": True,
+            "items": results
+        })
+
+    except Exception as e:
+        return jsonify({
+            "success": False,
+            "error": str(e)
+        }), 500
 
 
 # =======================================
 # SOFT DELETE
 # =======================================
-@app.route('/wardrobe/delete', methods=['POST'])
+
+@app.route("/wardrobe/delete", methods=["POST"])
 def delete_wardrobe_item():
-    data = request.get_json()
-    user_id = data.get("userId")
-    item_id = data.get("itemId")
+    try:
+        data = request.get_json()
 
-    result = wardrobe_collection.update_one(
-        {"userId": user_id, "_id": ObjectId(item_id)},
-        {"$set": {"deleted": True}}
-    )
+        if not data:
+            return jsonify({
+                "success": False,
+                "error": "No data received."
+            }), 400
 
-    if result.matched_count == 0:
-        return jsonify({"error": "Item not found"}), 404
+        user_id = data.get("userId")
+        item_id = data.get("itemId")
 
-    return jsonify({"message": "Item soft deleted"})
+        if not user_id or not item_id:
+            return jsonify({
+                "success": False,
+                "error": "Missing required fields."
+            }), 400
 
+        result = wardrobe_collection.update_one(
+            {
+                "_id": ObjectId(item_id),
+                "userId": user_id
+            },
+            {
+                "$set": {
+                    "deleted": True
+                }
+            }
+        )
+
+        if result.matched_count == 0:
+            return jsonify({
+                "success": False,
+                "error": "Item not found."
+            }), 404
+
+        return jsonify({
+            "success": True,
+            "message": "Item deleted successfully."
+        })
+
+    except Exception as e:
+        return jsonify({
+            "success": False,
+            "error": str(e)
+        }), 500
 
 # =======================================
 # RESTORE ITEM
 # =======================================
-@app.route('/wardrobe/restore', methods=['POST'])
+
+@app.route("/wardrobe/restore", methods=["POST"])
 def restore_wardrobe_item():
-    data = request.get_json()
-    user_id = data.get("userId")
-    item_id = data.get("itemId")
+    try:
+        data = request.get_json()
+        if not data:
+            return jsonify({
+                "success": False,
+                "error": "No data received."
+            }), 400
 
-    result = wardrobe_collection.update_one(
-        {"userId": user_id, "_id": ObjectId(item_id)},
-        {"$set": {"deleted": False}}
-    )
+        user_id = data.get("userId")
+        item_id = data.get("itemId")
 
-    if result.matched_count == 0:
-        return jsonify({"error": "Item not found"}), 404
+        if not user_id or not item_id:
+            return jsonify({
+                "success": False,
+                "error": "Missing required fields."
+            }), 400
 
-    return jsonify({"message": "Item restored"})
+        result = wardrobe_collection.update_one(
+            {
+                "_id": ObjectId(item_id),
+                "userId": user_id
+            },
+            {
+                "$set": {
+                    "deleted": False
+                }
+            }
+        )
+
+        if result.matched_count == 0:
+            return jsonify({
+                "success": False,
+                "error": "Item not found."
+            }), 404
+
+        return jsonify({
+            "success": True,
+            "message": "Item restored successfully."
+        })
+
+    except Exception as e:
+        return jsonify({
+            "success": False,
+            "error": str(e)
+        }), 500
 
 # =======================================
-# PERMANENT DELETE WARDROBE ITEM
+# PERMANENT DELETE
 # =======================================
-@app.route('/wardrobe/deletePermanent', methods=['POST'])
+
+@app.route("/wardrobe/deletePermanent", methods=["POST"])
 def delete_wardrobe_item_permanent():
-    data = request.get_json()
-    user_id = data.get("userId")
-    item_id = data.get("itemId")
+    try:
+        data = request.get_json()
+        if not data:
+            return jsonify({
+                "success": False,
+                "error": "No data received."
+            }), 400
 
-    if not all([user_id, item_id]):
-        return jsonify({"error": "Missing fields"}), 400
+        user_id = data.get("userId")
+        item_id = data.get("itemId")
 
-    result = wardrobe_collection.delete_one({
-        "userId": user_id,
-        "_id": ObjectId(item_id)
-    })
+        if not user_id or not item_id:
+            return jsonify({
+                "success": False,
+                "error": "Missing required fields."
+            }), 400
 
-    if result.deleted_count == 0:
-        return jsonify({"error": "Item not found"}), 404
+        result = wardrobe_collection.delete_one({
+            "_id": ObjectId(item_id),
+            "userId": user_id
+        })
 
-    return jsonify({"message": "Item permanently deleted"})
+        if result.deleted_count == 0:
+            return jsonify({
+                "success": False,
+                "error": "Item not found."
+            }), 404
+
+        return jsonify({
+            "success": True,
+            "message": "Item permanently deleted."
+        })
+
+    except Exception as e:
+        return jsonify({
+            "success": False,
+            "error": str(e)
+        }), 500
+
 # =======================================
-# OUTFIT RECOMMENDATION (FIXED)
+# OUTFIT RECOMMENDATION / GENERATOR
 # =======================================
+
 def recommend_outfit(wardrobe_items):
+    def normalize(category):
+        return category.lower().replace(" ", "").strip()
 
-    def normalize(cat):
-        return cat.lower().replace(" ", "")
+    tops = []
+    bottoms = []
 
-    tops = [
-        item for item in wardrobe_items
-        if normalize(item.get("category", "")) in ["topwear", "top", "shirt", "tshirt", "upper"]
-    ]
+    for item in wardrobe_items:
+        category = normalize(item.get("category", ""))
+        if category in {
+            "topwear",
+            "top",
+            "shirt",
+            "tshirt",
+            "upper"
+        }:
+            tops.append(item)
 
-    bottoms = [
-        item for item in wardrobe_items
-        if normalize(item.get("category", "")) in ["bottomwear", "bottom", "pant", "pants", "jeans", "trouser"]
-    ]
+        elif category in {
+            "bottomwear",
+            "bottom",
+            "pant",
+            "pants",
+            "jeans",
+            "trouser"
+        }:
+            bottoms.append(item)
+
+    random.shuffle(tops)
+    random.shuffle(bottoms)
 
     if not tops and not bottoms:
         return None
 
     if not tops:
-        return {"topwear": None, "bottomwear": random.choice(bottoms)}
+        return {
+            "topwear": None,
+            "bottomwear": bottoms[0]
+        }
 
     if not bottoms:
-        return {"topwear": random.choice(tops), "bottomwear": None}
+        return {
+            "topwear": tops[0],
+            "bottomwear": None
+        }
 
     return {
-        "topwear": random.choice(tops),
-        "bottomwear": random.choice(bottoms)
+        "topwear": tops[0],
+        "bottomwear": bottoms[0]
     }
 
+# =======================================
+# GENERATE NEXT OUTFIT
+# =======================================
 
-# =======================================
-# FINAL OUTFIT GENERATOR ROUTE
-# =======================================
-@app.route('/generator/next', methods=['GET'])
+@app.route("/generator/next", methods=["GET"])
 def next_outfit():
-    user_id = request.args.get("userId")
-    if not user_id:
-        return jsonify({"error": "User ID required"}), 400
+    try:
+        user_id = request.args.get("userId", "").strip()
 
-    wardrobe_items = list(wardrobe_collection.find({
-        "userId": user_id,
-        "deleted": False
-    }))
+        if not user_id:
+            return jsonify({
+                "success": False,
+                "error": "User ID is required."
+            }), 400
 
-    if not wardrobe_items:
-        return jsonify({"topwear": None, "bottomwear": None})
+        wardrobe_items = list(
+            wardrobe_collection.find({
+                "userId": user_id,
+                "deleted": False
+            })
+        )
 
-    outfit_pair = recommend_outfit(wardrobe_items)
+        if len(wardrobe_items) == 0:
+            return jsonify({
+                "topwear": None,
+                "bottomwear": None
+            })
 
-    if not outfit_pair:
-        return jsonify({"topwear": None, "bottomwear": None})
+        outfit = recommend_outfit(wardrobe_items)
 
-    top_url = outfit_pair["topwear"]["imageUrl"] if outfit_pair["topwear"] else None
-    bottom_url = outfit_pair["bottomwear"]["imageUrl"] if outfit_pair["bottomwear"] else None
+        if outfit is None:
+            return jsonify({
+                "topwear": None,
+                "bottomwear": None
+            })
 
-    return jsonify({
-        "topwear": top_url,
-        "bottomwear": bottom_url
-    })
+        return jsonify({
+            "topwear":
+                outfit["topwear"]["imageUrl"]
+                if outfit["topwear"] else None,
 
+            "bottomwear":
+                outfit["bottomwear"]["imageUrl"]
+                if outfit["bottomwear"] else None
+        })
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({
+            "success": False,
+            "error": str(e)
+        }), 500
 
 # =======================================
-# FAVOURITES: SAVE + GET ROUTES
+# SAVE FAVOURITE
 # =======================================
-@app.route('/saveFavourite', methods=['POST'])
+
+@app.route("/saveFavourite", methods=["POST"])
 def save_favourite():
     try:
         data = request.get_json()
-        user_id = data.get("userId")
-        topwear = data.get("topwear")   # expected string URL
-        bottomwear = data.get("bottomwear")  # expected string URL
+        if not data:
+            return jsonify({
+                "success": False,
+                "error": "No data received."
+            }), 400
 
-        if not all([user_id, topwear, bottomwear]):
-            return jsonify({"error": "Missing fields"}), 400
+        user_id = data.get("userId", "").strip()
+        topwear = data.get("topwear")
+        bottomwear = data.get("bottomwear")
 
-        fav_doc = {
+        if not user_id or not topwear or not bottomwear:
+            return jsonify({
+                "success": False,
+                "error": "Missing required fields."
+            }), 400
+
+        # Prevent duplicate favourites
+        existing = favourites_collection.find_one({
+            "userId": user_id,
+            "topwear": topwear,
+            "bottomwear": bottomwear
+        })
+
+        if existing:
+            return jsonify({
+                "success": True,
+                "message": "Already saved."
+            })
+
+        favourites_collection.insert_one({
             "userId": user_id,
             "topwear": topwear,
             "bottomwear": bottomwear,
             "createdAt": datetime.utcnow()
-        }
+        })
 
-        favourites_collection.insert_one(fav_doc)
+        return jsonify({
+            "success": True,
+            "message": "Favourite saved successfully."
+        })
 
-        return jsonify({"success": True, "message": "Favourite saved"})
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        import traceback
+        traceback.print_exc()
+        return jsonify({
+            "success": False,
+            "error": str(e)
+        }), 500
 
+# =======================================
+# GET FAVOURITES
+# =======================================
 
-@app.route('/getFavourites', methods=['GET'])
+@app.route("/getFavourites", methods=["GET"])
 def get_favourites():
     try:
-        user_id = request.args.get("userId")
+        user_id = request.args.get("userId", "").strip()
         if not user_id:
-            return jsonify({"error": "userId required"}), 400
+            return jsonify({
+                "success": False,
+                "error": "userId is required."
+            }), 400
 
-        items = list(favourites_collection.find({"userId": user_id}))
+        favourites = list(
+            favourites_collection.find({
+                "userId": user_id
+            }).sort("createdAt", -1)
+        )
+
         results = []
-        for it in items:
+
+        for item in favourites:
             results.append({
-                "id": str(it.get("_id")),
-                "topwear": it.get("topwear"),
-                "bottomwear": it.get("bottomwear"),
-                "createdAt": it.get("createdAt")
+                "id": str(item["_id"]),
+                "topwear": item.get("topwear"),
+                "bottomwear": item.get("bottomwear"),
+                "createdAt": item.get("createdAt")
             })
 
-        return jsonify({"favourites": results})
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return jsonify({
+            "success": True,
+            "favourites": results
+        })
 
-@app.route('/remove-bg', methods=['POST'])
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({
+            "success": False,
+            "error": str(e)
+        }), 500
+
+# =======================================
+# REMOVE BACKGROUND
+# =======================================
+
+@app.route("/remove-bg", methods=["POST"])
 def remove_bg():
     from rembg import remove
     try:
         if "images" not in request.files:
-            return jsonify({"error": "No files uploaded. Use key 'images'"}), 400
+            return jsonify({
+                "success": False,
+                "error": "No files uploaded. Use key 'images'."
+            }), 400
 
         files = request.files.getlist("images")
-        if len(files) == 0:
-            return jsonify({"error": "No image found"}), 400
 
-        processed = []
+        if not files:
+            return jsonify({
+                "success": False,
+                "error": "No images found."
+            }), 400
+
+        allowed_extensions = {
+            "png",
+            "jpg",
+            "jpeg",
+            "webp"
+        }
+
+        processed_files = []
+
+        print(f"Processing {len(files)} image(s)...")
 
         for file in files:
+            if file.filename == "":
+                return jsonify({
+                    "success": False,
+                    "error": "Empty filename."
+                }), 400
+
             ext = file.filename.rsplit(".", 1)[-1].lower()
-            if ext not in ["png", "jpg", "jpeg", "webp"]:
-                return jsonify({"error": f"Unsupported file type: {ext}"}), 400
 
-            # Open with PIL
+            if ext not in allowed_extensions:
+                return jsonify({
+                    "success": False,
+                    "error": f"Unsupported file type: {ext}"
+                }), 400
+
+            print(f"Removing background: {file.filename}")
+
             img = Image.open(file).convert("RGBA")
-            # Remove background
+
             output = remove(img)
-            # Save to bytes buffer
-            buf = io.BytesIO()
-            output.save(buf, format="PNG")
-            buf.seek(0)
 
-            new_filename = file.filename.rsplit(".", 1)[0] + "_nobg.png"
-            processed.append((new_filename, buf))
+            buffer = io.BytesIO()
 
-        # Single image → return directly
-        if len(processed) == 1:
-            filename, buffer = processed[0]
+            output.save(
+                buffer,
+                format="PNG"
+            )
+
+            buffer.seek(0)
+
+            output_name = (
+                os.path.splitext(file.filename)[0]
+                + "_nobg.png"
+            )
+
+            processed_files.append(
+                (
+                    output_name,
+                    buffer
+                )
+            )
+
+        print("Background removal completed.")
+
+        # -----------------------------
+        # Single image
+        # -----------------------------
+
+        if len(processed_files) == 1:
+            filename, buffer = processed_files[0]
             return send_file(
                 buffer,
                 mimetype="image/png",
@@ -640,11 +1167,21 @@ def remove_bg():
                 download_name=filename
             )
 
-        # Multiple images → return ZIP
+        # -----------------------------
+        # Multiple images
+        # -----------------------------
         zip_buffer = io.BytesIO()
-        with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zipf:
-            for fname, buff in processed:
-                zipf.writestr(fname, buff.getvalue())
+        with zipfile.ZipFile(
+            zip_buffer,
+            "w",
+            zipfile.ZIP_DEFLATED
+        ) as zipf:
+            for filename, buffer in processed_files:
+                zipf.writestr(
+                    filename,
+                    buffer.getvalue()
+                )
+
         zip_buffer.seek(0)
 
         return send_file(
@@ -655,7 +1192,13 @@ def remove_bg():
         )
 
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        import traceback
+        traceback.print_exc()
+        return jsonify({
+            "success": False,
+            "error": str(e)
+        }), 500
+
 # =======================================
 # RUN SERVER
 # =======================================
