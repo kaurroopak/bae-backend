@@ -22,7 +22,6 @@ import cloudinary.uploader
 import tensorflow as tf
 from tensorflow.keras.applications.mobilenet_v2 import preprocess_input
 
-
 load_dotenv()
 print("=" * 60)
 print("Starting BAE Backend...")
@@ -476,7 +475,6 @@ def predict():
 @app.route("/upload-image", methods=["POST"])
 def upload_image():
     try:
-        from rembg import remove
         if "image" not in request.files:
             return jsonify({
                 "success": False,
@@ -505,25 +503,11 @@ def upload_image():
                 "success": False,
                 "error": f"Unsupported file type: {ext}"
             }), 400
-        print("Opening Image...")
-
-        img = Image.open(file).convert("RGBA")
-        print("Removing Background...")
-
-        img_no_bg = remove(img)
-        print("Background Removed")
-
-        buffer = io.BytesIO()
-        img_no_bg.save(
-            buffer,
-            format="PNG"
-        )
-
-        buffer.seek(0)
-        print("Uploading to Cloudinary...")
+        
+        print("Uploading image...")
 
         upload = cloudinary.uploader.upload(
-            buffer,
+            file,
             folder="wardrobe_items",
             public_id=os.path.splitext(file.filename)[0],
             overwrite=True,
@@ -582,22 +566,18 @@ def add_wardrobe():
                 "success": False,
                 "error": "Unsupported image type."
             }), 400
-        
-        from rembg import remove
-        
+        print("Reading uploaded image...")
+
         img = Image.open(file).convert("RGBA")
 
-        print("Removing background...")
-        img_no_bg = remove(img)
-        print("Background removed.")
-
         print("Preparing image buffer...")
+
         buffer = io.BytesIO()
-        img_no_bg.save(
-            buffer,
-            format="PNG"
-        )
+
+        img.save(buffer, format="PNG")
+
         buffer.seek(0)
+
         print("Uploading image to Cloudinary...")
 
         upload = cloudinary.uploader.upload(
@@ -614,7 +594,7 @@ def add_wardrobe():
         # TensorFlow Lite Outfit Prediction
         # --------------------------------------------
         print("Running outfit prediction...")
-        img_arr = np.array(img_no_bg)
+        img_arr = np.array(img)
         img_arr = cv2.cvtColor(
             img_arr,
             cv2.COLOR_RGBA2BGR
@@ -1125,128 +1105,6 @@ def get_favourites():
             "success": True,
             "favourites": results
         })
-
-    except Exception as e:
-        import traceback
-        traceback.print_exc()
-        return jsonify({
-            "success": False,
-            "error": str(e)
-        }), 500
-
-# =======================================
-# REMOVE BACKGROUND
-# =======================================
-
-@app.route("/remove-bg", methods=["POST"])
-def remove_bg():
-    from rembg import remove
-    try:
-        if "images" not in request.files:
-            return jsonify({
-                "success": False,
-                "error": "No files uploaded. Use key 'images'."
-            }), 400
-
-        files = request.files.getlist("images")
-
-        if not files:
-            return jsonify({
-                "success": False,
-                "error": "No images found."
-            }), 400
-
-        allowed_extensions = {
-            "png",
-            "jpg",
-            "jpeg",
-            "webp"
-        }
-
-        processed_files = []
-
-        print(f"Processing {len(files)} image(s)...")
-
-        for file in files:
-            if file.filename == "":
-                return jsonify({
-                    "success": False,
-                    "error": "Empty filename."
-                }), 400
-
-            ext = file.filename.rsplit(".", 1)[-1].lower()
-
-            if ext not in allowed_extensions:
-                return jsonify({
-                    "success": False,
-                    "error": f"Unsupported file type: {ext}"
-                }), 400
-
-            print(f"Removing background: {file.filename}")
-
-            img = Image.open(file).convert("RGBA")
-
-            output = remove(img)
-
-            buffer = io.BytesIO()
-
-            output.save(
-                buffer,
-                format="PNG"
-            )
-
-            buffer.seek(0)
-
-            output_name = (
-                os.path.splitext(file.filename)[0]
-                + "_nobg.png"
-            )
-
-            processed_files.append(
-                (
-                    output_name,
-                    buffer
-                )
-            )
-
-        print("Background removal completed.")
-
-        # -----------------------------
-        # Single image
-        # -----------------------------
-
-        if len(processed_files) == 1:
-            filename, buffer = processed_files[0]
-            return send_file(
-                buffer,
-                mimetype="image/png",
-                as_attachment=True,
-                download_name=filename
-            )
-
-        # -----------------------------
-        # Multiple images
-        # -----------------------------
-        zip_buffer = io.BytesIO()
-        with zipfile.ZipFile(
-            zip_buffer,
-            "w",
-            zipfile.ZIP_DEFLATED
-        ) as zipf:
-            for filename, buffer in processed_files:
-                zipf.writestr(
-                    filename,
-                    buffer.getvalue()
-                )
-
-        zip_buffer.seek(0)
-
-        return send_file(
-            zip_buffer,
-            mimetype="application/zip",
-            as_attachment=True,
-            download_name="background_removed_images.zip"
-        )
 
     except Exception as e:
         import traceback

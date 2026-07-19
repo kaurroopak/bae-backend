@@ -7,10 +7,6 @@ numpy==1.26.4
 pillow==10.2.0
 opencv-python-headless==4.8.1.78
 
-# Background removal
-rembg==2.0.40
-onnxruntime==1.17.3
-
 # Backend infra
 gunicorn==21.2.0
 pymongo==4.6.1
