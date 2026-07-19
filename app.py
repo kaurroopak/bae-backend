@@ -609,6 +609,7 @@ def add_wardrobe():
             resource_type="image"
         )
         image_url = upload["secure_url"]
+        public_id = upload["public_id"]
         print("Cloudinary upload complete.")
         # --------------------------------------------
         # TensorFlow Lite Outfit Prediction
@@ -646,6 +647,7 @@ def add_wardrobe():
         wardrobe_collection.insert_one({
             "userId": user_id,
             "imageUrl": image_url,
+            "publicId": public_id,
             "category": predicted_class,
             "deleted": False,
             "createdAt": datetime.utcnow()
@@ -875,6 +877,7 @@ def restore_wardrobe_item():
 def delete_wardrobe_item_permanent():
     try:
         data = request.get_json()
+
         if not data:
             return jsonify({
                 "success": False,
@@ -890,16 +893,27 @@ def delete_wardrobe_item_permanent():
                 "error": "Missing required fields."
             }), 400
 
-        result = wardrobe_collection.delete_one({
+        # Find the item first
+        item = wardrobe_collection.find_one({
             "_id": ObjectId(item_id),
             "userId": user_id
         })
 
-        if result.deleted_count == 0:
+        if not item:
             return jsonify({
                 "success": False,
                 "error": "Item not found."
             }), 404
+
+        # Delete from Cloudinary if publicId exists
+        if item.get("publicId"):
+            cloudinary.uploader.destroy(item["publicId"])
+
+        # Delete from MongoDB
+        wardrobe_collection.delete_one({
+            "_id": ObjectId(item_id),
+            "userId": user_id
+        })
 
         return jsonify({
             "success": True,
