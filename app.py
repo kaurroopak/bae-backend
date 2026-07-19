@@ -21,6 +21,7 @@ import cloudinary
 import cloudinary.uploader
 import tensorflow as tf
 from tensorflow.keras.applications.mobilenet_v2 import preprocess_input
+from rembg import remove
 
 load_dotenv()
 print("=" * 60)
@@ -475,7 +476,6 @@ def predict():
 @app.route("/upload-image", methods=["POST"])
 def upload_image():
     try:
-        from rembg import remove
         if "image" not in request.files:
             return jsonify({
                 "success": False,
@@ -581,16 +581,12 @@ def add_wardrobe():
                 "success": False,
                 "error": "Unsupported image type."
             }), 400
-
-        print("Reading image...")
-
+        
         img = Image.open(file).convert("RGBA")
 
-        # ------------------------------------------------
-        # Keep background removal disabled for now.
-        # We can enable rembg after verifying inference.
-        # ------------------------------------------------
-        img_no_bg = img
+        print("Removing background...")
+        img_no_bg = remove(img)
+        print("Background removed.")
 
         print("Preparing image buffer...")
         buffer = io.BytesIO()
@@ -1141,7 +1137,6 @@ def get_favourites():
 
 @app.route("/remove-bg", methods=["POST"])
 def remove_bg():
-    from rembg import remove
     try:
         if "images" not in request.files:
             return jsonify({
