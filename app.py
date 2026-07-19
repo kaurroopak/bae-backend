@@ -769,6 +769,53 @@ def delete_wardrobe_item():
         }), 500
 
 # =======================================
+# GET TRASH
+# =======================================
+
+@app.route("/wardrobe/trash", methods=["GET"])
+def get_trash():
+    try:
+        user_id = request.args.get("userId", "").strip()
+
+        if not user_id:
+            return jsonify({
+                "success": False,
+                "error": "Missing userId."
+            }), 400
+
+        items = list(
+            wardrobe_collection.find(
+                {
+                    "userId": user_id,
+                    "deleted": True
+                }
+            ).sort("createdAt", -1)
+        )
+
+        results = []
+
+        for item in items:
+            results.append({
+                "id": str(item["_id"]),
+                "userId": item.get("userId"),
+                "imageUrl": item.get("imageUrl"),
+                "category": item.get("category"),
+                "deleted": True,
+                "createdAt": item.get("createdAt")
+            })
+
+        return jsonify({
+            "success": True,
+            "items": results
+        })
+
+    except Exception as e:
+        return jsonify({
+            "success": False,
+            "error": str(e)
+        }), 500
+
+# =======================================
 # RESTORE ITEM
 # =======================================
 
