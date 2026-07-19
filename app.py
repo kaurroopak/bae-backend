@@ -625,6 +625,7 @@ def add_wardrobe():
             input_details,
             output_details
         ) = get_outfit_interpreter()
+        print(output_details)
 
         prediction = run_tflite(
             interpreter,
@@ -632,6 +633,12 @@ def add_wardrobe():
             output_details,
             x
         )
+        print("=" * 50)
+        print("RAW MODEL OUTPUT:")
+        print(prediction)
+        print("Prediction Shape:", prediction.shape)
+        print("Prediction Dtype:", prediction.dtype)
+        print("=" * 50)
 
         prediction = prediction[0]
         predicted_index = int(np.argmax(prediction))
