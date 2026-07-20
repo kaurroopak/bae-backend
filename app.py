@@ -1115,6 +1115,49 @@ def get_favourites():
         }), 500
 
 # =======================================
+# REMOVE FAVOURITE
+# =======================================
+
+from bson import ObjectId
+
+@app.route("/removeFavourite", methods=["POST"])
+def remove_favourite():
+    try:
+        data = request.get_json()
+
+        favourite_id = data.get("id")
+
+        if not favourite_id:
+            return jsonify({
+                "success": False,
+                "error": "Favourite id is required."
+            }), 400
+
+        result = favourites_collection.delete_one({
+            "_id": ObjectId(favourite_id)
+        })
+
+        if result.deleted_count == 0:
+            return jsonify({
+                "success": False,
+                "error": "Favourite not found."
+            }), 404
+
+        return jsonify({
+            "success": True,
+            "message": "Favourite removed successfully."
+        })
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+
+        return jsonify({
+            "success": False,
+            "error": str(e)
+        }), 500
+
+# =======================================
 # RUN SERVER
 # =======================================
 if __name__ == "__main__":
