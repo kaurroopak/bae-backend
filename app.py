@@ -70,6 +70,11 @@ users_collection = db["users"]
 wardrobe_collection = db["wardrobe"]
 favourites_collection = db["favourites"]
 
+import tensorflow as tf
+print("=" * 50)
+print("TensorFlow Version:", tf.__version__)
+print("=" * 50)
+
 # =======================================
 # MODEL PATHS AND LABELS
 # =======================================
@@ -129,6 +134,12 @@ def get_mood_interpreter():
         mood_input_details,
         mood_output_details
     )
+
+import os
+
+print("MOOD_MODEL_PATH:", MOOD_MODEL_PATH)
+print("Exists:", os.path.exists(MOOD_MODEL_PATH))
+print("Size:", os.path.getsize(MOOD_MODEL_PATH))
 
 # =======================================
 # LOAD OUTFIT MODEL
