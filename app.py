@@ -73,8 +73,8 @@ favourites_collection = db["favourites"]
 # =======================================
 # MODEL PATHS AND LABELS
 # =======================================
-MOOD_MODEL_PATH = "models/mood_model/mobilenetv2_mood_3class.tflite"
-MOOD_LABELS = ['happy', 'neutral', 'sad']
+MOOD_MODEL_PATH = "models/mood_model/mobilenetv2_mood_2class.tflite"
+MOOD_LABELS = ['happy', 'neutral']
 
 OUTFIT_MODEL_PATH = "models/outfit_model/mobilenetv2_top_bottom.tflite"
 
